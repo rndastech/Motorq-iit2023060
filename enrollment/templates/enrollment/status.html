@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vehicle Enrollment Status</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; }
+
+        .search-box { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .search-box h1 { font-size: 18px; margin-bottom: 15px; color: #333; }
+        .input-row { display: flex; gap: 10px; }
+        input { flex: 1; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 16px; }
+        button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+
+        .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .card h2 { font-size: 14px; color: #666; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+        .status-badge { display: inline-block; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; text-transform: uppercase; }
+        .status-pending { background: #fff3cd; color: #856404; }
+        .status-in_progress { background: #cce5ff; color: #004085; }
+        .status-awaiting_async { background: #d4edda; color: #155724; }
+        .status-completed { background: #d4edda; color: #155724; }
+        .status-failed { background: #f8d7da; color: #721c24; }
+        .status-cancelled { background: #e2e3e5; color: #383d41; }
+
+        .info-grid { display: grid; grid-template-columns: 120px 1fr; gap: 8px; }
+        .info-label { color: #666; font-size: 13px; }
+        .info-value { font-size: 14px; color: #333; word-break: break-all; }
+
+        .timeline { position: relative; padding-left: 20px; }
+        .timeline::before { content: ''; position: absolute; left: 6px; top: 0; bottom: 0; width: 2px; background: #e0e0e0; }
+        .timeline-item { position: relative; padding-bottom: 15px; }
+        .timeline-item::before { content: ''; position: absolute; left: -17px; top: 4px; width: 10px; height: 10px; border-radius: 50%; background: #ccc; }
+        .timeline-item.success::before { background: #28a745; }
+        .timeline-item.failed::before { background: #dc3545; }
+        .timeline-item.start::before { background: #007bff; }
+        .timeline-item.cancel::before { background: #dc3545; }
+
+        .timeline-time { font-size: 11px; color: #999; }
+        .timeline-action { font-size: 13px; font-weight: 600; color: #333; margin: 2px 0; }
+        .timeline-details { font-size: 12px; color: #666; margin-top: 4px; }
+
+        .error-box { background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 6px; padding: 12px; margin-top: 10px; }
+        .error-box pre { font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+
+        .loading { text-align: center; padding: 20px; color: #666; }
+        .no-data { text-align: center; padding: 40px; color: #999; }
+
+        .step-data { margin-top: 15px; }
+        .step-item { background: #f8f9fa; border-radius: 6px; padding: 12px; margin-bottom: 10px; }
+        .step-item h4 { font-size: 13px; color: #333; margin-bottom: 6px; }
+        .step-item .meta { font-size: 11px; color: #666; }
+        .step-item .error { color: #dc3545; font-size: 12px; margin-top: 4px; }
+
+        .auto-refresh { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #666; margin-top: 10px; }
+        .auto-refresh input { width: 16px; height: 16px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="search-box">
+            <h1>🔍 Vehicle Enrollment Status</h1>
+            <div class="input-row">
+                <input type="text" id="vinInput" placeholder="Enter VIN (e.g., MA3EHAB12345678901)" autofocus>
+                <button id="searchBtn" onclick="searchVin()">Search</button>
+            </div>
+            <div class="auto-refresh">
+                <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()" checked>
+                <label for="autoRefresh">Auto-refresh</label>
+                <select id="refreshRate" onchange="toggleAutoRefresh()" style="padding:4px;border:1px solid #ddd;border-radius:4px;">
+                    <option value="500">0.5s</option>
+                    <option value="1000">1s</option>
+                    <option value="3000" selected>3s</option>
+                </select>
+            </div>
+        </div>
+
+        <div id="content"></div>
+    </div>
+
+    <script>
+        const BASE_URL = window.location.origin;
+        let currentVin = '';
+        let autoRefreshInterval = null;
+
+        function searchVin() {
+            const vin = document.getElementById('vinInput').value.trim().toUpperCase();
+            if (!vin) return;
+            currentVin = vin;
+            history.replaceState(null, '', `#${vin}`);
+            fetchStatus();
+        }
+
+        function toggleAutoRefresh() {
+            const enabled = document.getElementById('autoRefresh').checked;
+            const rate = parseInt(document.getElementById('refreshRate').value);
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+            }
+            if (enabled && currentVin) {
+                autoRefreshInterval = setInterval(() => fetchStatus(), rate);
+            }
+        }
+
+        async function enrollVin() {
+            const brand = document.getElementById('brandSelect').value;
+            const btn = document.getElementById('enrollBtn');
+            btn.disabled = true;
+            btn.textContent = 'Enrolling...';
+
+            try {
+                const res = await fetch(`${BASE_URL}/api/enroll/start/`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': 'dev-api-key-change-in-production'
+                    },
+                    body: JSON.stringify({ vin: currentVin, brand: brand })
+                });
+
+                const data = await res.json();
+
+                if (res.ok) {
+                    searchVin(); // Refresh status
+                } else {
+                    alert('Error: ' + (data.error || data.detail || 'Unknown error'));
+                    btn.disabled = false;
+                    btn.textContent = 'Enroll';
+                }
+            } catch (err) {
+                alert('Error: ' + err.message);
+                btn.disabled = false;
+                btn.textContent = 'Enroll';
+            }
+        }
+
+        async function fetchStatus() {
+            const content = document.getElementById('content');
+
+            if (!currentVin) {
+                content.innerHTML = '<div class="no-data">Enter a VIN to search</div>';
+                return;
+            }
+
+            try {
+                const res = await fetch(`${BASE_URL}/api/enroll/status/${currentVin}/`);
+
+                if (res.status === 404) {
+                    content.innerHTML = `
+                        <div class="card">
+                            <div class="no-data">
+                                <p>No enrollment found for <strong>${currentVin}</strong></p>
+                                <p style="margin: 15px 0;">Start a new enrollment:</p>
+                            </div>
+                            <div style="padding: 0 20px 20px;">
+                                <select id="brandSelect" style="padding:10px;border:1px solid #ddd;border-radius:6px;margin-right:10px;width:150px;">
+                                    <option value="maruti">Maruti</option>
+                                    <option value="tata">Tata</option>
+                                </select>
+                                <button id="enrollBtn" onclick="enrollVin()" style="padding:10px 20px;background:#28a745;color:white;border:none;border-radius:6px;cursor:pointer;">Enroll Vehicle</button>
+                            </div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
+
+                const data = await res.json();
+                renderStatus(data);
+
+            } catch (err) {
+                content.innerHTML = `<div class="error-box">Error: ${err.message}</div>`;
+            }
+        }
+
+        async function completeAllProducts() {
+            const btn = document.getElementById('completeAllBtn');
+            if (!btn) return;
+            btn.disabled = true;
+            btn.textContent = 'Completing...';
+
+            try {
+                const res = await fetch(`${BASE_URL}/api/enroll/status/${currentVin}/complete`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+
+                if (res.ok) {
+                    searchVin(); // Refresh
+                } else {
+                    const data = await res.json();
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                }
+            } catch (err) {
+                alert('Error: ' + err.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Complete All Products';
+            }
+        }
+
+        async function cancelEnrollment() {
+            if (!confirm('Are you sure you want to cancel this enrollment? This cannot be undone.')) {
+                return;
+            }
+
+            const btn = document.getElementById('cancelBtn');
+            btn.disabled = true;
+            btn.textContent = 'Cancelling...';
+
+            try {
+                const res = await fetch(`${BASE_URL}/api/enroll/cancel/${currentVin}/`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-API-Key': 'dev-api-key-change-in-production'
+                    }
+                });
+
+                if (res.ok) {
+                    searchVin(); // Refresh
+                } else {
+                    const data = await res.json();
+                    alert('Error: ' + (data.error || 'Unknown error'));
+                }
+            } catch (err) {
+                alert('Error: ' + err.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Cancel Enrollment';
+            }
+        }
+
+        function renderStatus(data) {
+            const { enrollment, history, async_requests } = data;
+            const content = document.getElementById('content');
+            const statusClass = `status-${enrollment.status}`;
+
+            let errorHtml = '';
+            if (enrollment.error_message) {
+                errorHtml = `<div class="error-box"><strong>Error:</strong><pre>${enrollment.error_message}</pre></div>`;
+            }
+
+            let stepDataHtml = '';
+            if (Object.keys(enrollment.step_data).length > 0) {
+                stepDataHtml = '<div class="step-data"><h3 style="font-size:14px;color:#666;margin-bottom:10px;">Step Results</h3>';
+                for (const [step, data] of Object.entries(enrollment.step_data)) {
+                    const hasError = data.error && data.error_code;
+                    stepDataHtml += `
+                        <div class="step-item">
+                            <h4>${step}</h4>
+                            <div class="meta">Status: ${hasError ? '❌ Failed' : '✅ Success'}</div>
+                            ${hasError ? `<div class="error">Code: ${data.error_code}, Non-retryable</div>` : ''}
+                        </div>
+                    `;
+                }
+                stepDataHtml += '</div>';
+            }
+
+            let asyncHtml = '';
+            if (async_requests && async_requests.length > 0) {
+                asyncHtml = '<div class="step-data"><h3 style="font-size:14px;color:#666;margin-bottom:10px;">Async Requests</h3>';
+                for (const req of async_requests) {
+                    asyncHtml += `
+                        <div class="step-item">
+                            <h4>${req.request_id}</h4>
+                            <div class="meta">
+                                Status: ${req.status} |
+                                Completed: ${req.completed_products?.length || 0} |
+                                Pending: ${req.pending_products?.length || 0}
+                            </div>
+                        </div>
+                    `;
+                }
+                asyncHtml += '</div>';
+            }
+
+            content.innerHTML = `
+                <div class="card">
+                    <h2>Current State</h2>
+                    <div style="margin-bottom:15px;">
+                        <span class="status-badge ${statusClass}">${enrollment.status.replace('_', ' ')}</span>
+                        ${enrollment.status === 'awaiting_async' ? `
+                            <button id="completeAllBtn" onclick="completeAllProducts()" style="margin-left:10px;padding:6px 12px;background:#17a2b8;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;">Complete All Products</button>
+                        ` : ''}
+                        ${['pending', 'in_progress', 'awaiting_async'].includes(enrollment.status) ? `
+                            <button id="cancelBtn" onclick="cancelEnrollment()" style="margin-left:10px;padding:6px 12px;background:#dc3545;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;">Cancel Enrollment</button>
+                        ` : ''}
+                    </div>
+                    <div class="info-grid">
+                        <span class="info-label">VIN</span>
+                        <span class="info-value">${enrollment.vin}</span>
+
+                        <span class="info-label">Brand</span>
+                        <span class="info-value">${enrollment.brand_name}</span>
+
+                        <span class="info-label">Current Step</span>
+                        <span class="info-value">${enrollment.current_step || '-'}</span>
+
+                        <span class="info-label">Tries</span>
+                        <span class="info-value">${enrollment.tries} / ${enrollment.max_tries}</span>
+
+                        <span class="info-label">Created</span>
+                        <span class="info-value">${formatTime(enrollment.created_at)}</span>
+
+                        <span class="info-label">Updated</span>
+                        <span class="info-value">${formatTime(enrollment.updated_at)}</span>
+
+                        ${enrollment.completed_at ? `
+                        <span class="info-label">Completed</span>
+                        <span class="info-value">${formatTime(enrollment.completed_at)}</span>
+                        ` : ''}
+                    </div>
+                    ${errorHtml}
+                    ${stepDataHtml}
+                    ${asyncHtml}
+                </div>
+
+                <div class="card">
+                    <h2>History</h2>
+                    <div id="historyContainer"></div>
+                </div>
+            `;
+
+            renderHistory(history || []);
+        }
+
+        function renderHistory(history) {
+            const container = document.getElementById('historyContainer');
+            if (!history || history.length === 0) {
+                container.innerHTML = '<div class="no-data">No history available</div>';
+                return;
+            }
+
+            let html = '<div class="timeline">';
+            for (const item of history) {
+                const actionClass = item.action === 'cancel' ? 'cancel' :
+                                   item.to_status === 'failed' ? 'failed' :
+                                   item.action === 'start' ? 'start' : 'success';
+                html += `
+                    <div class="timeline-item ${actionClass}">
+                        <div class="timeline-time">${formatTime(item.created_at)}</div>
+                        <div class="timeline-action">${item.action} → ${item.to_status}</div>
+                        ${item.details && Object.keys(item.details).length > 0 ? `
+                            <div class="timeline-details">
+                                ${item.details.error_code ? `Code: ${item.details.error_code} | ` : ''}
+                                ${item.details.retryable !== undefined ? `Retryable: ${item.details.retryable}` : ''}
+                                ${item.details.step ? `Step: ${item.details.step}` : ''}
+                                ${item.details.brand ? `Brand: ${item.details.brand}` : ''}
+                                ${item.details.tries ? `Tries: ${item.details.tries}` : ''}
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }
+            html += '</div>';
+
+            container.innerHTML = html;
+        }
+
+        function formatTime(isoString) {
+            if (!isoString) return '-';
+            const date = new Date(isoString);
+            return date.toLocaleString();
+        }
+
+        // Handle Enter key
+        document.getElementById('vinInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') searchVin();
+        });
+
+        // Auto-search from URL hash
+        const hashVin = window.location.hash.slice(1);
+        if (hashVin) {
+            document.getElementById('vinInput').value = hashVin;
+            searchVin();
+        }
+    </script>
+</body>
+</html>
